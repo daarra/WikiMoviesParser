@@ -8,26 +8,26 @@ class MoviesInfoParser(scrapy.Spider):
     custom_settings = {'ROBOTSTXT_OBEY': False}
 
     def parse(self, response):
-        base_url = response.url
-        movie_page_links = response.xpath("//*[@id='mw-pages']/div/div/div/ul/li/a/@href").getall()
-        
+        # Получаем ссылки на страницы фильмов
+        movie_page_links = response.xpath("//*[@id='mw-pages']//li/a/@href").getall()
         for page in movie_page_links: 
-            page_link = urljoin(base_url, page)
+            page_link = response.urljoin(page)  
             yield response.follow(page_link, self.info_parse)
 
-        pagination_link = response.xpath("//a[contains(text(), 'Следующая страница')]/@href").get()
-        if pagination_link:
-            next_page_url = urljoin(base_url, pagination_link)
-            yield response.follow(next_page_url, self.parse)
-
+        next_page_link = response.xpath("//a[contains(text(), 'Следующая страница')]/@href").extract_first()
+        if next_page_link:
+            yield response.follow(response.urljoin(next_page_link), self.parse)
 
     def info_parse(self, response):
-        movie_info = {'title': None, 'genres': [], 'year': None, 'director': [], 'country': []}
+        movie_info = {'title': "Неизвестно", 'genres': [], 'year': "Неизвестно", 'director': [], 'country': []}
 
-        quote = response.css("table.infobox")
-        movie_info['title'] = quote.css("th.infobox-above::text").get(default="Неизвестно").strip()
+        # Извлекаем название фильма
+        title = response.css("th.infobox-above::text").get()
+        if title:
+            movie_info['title'] = title.strip()
 
-        for row in response.xpath("/html/body/div[3]/div[3]/div[5]/div[1]/table[1]/tbody/tr"):
+        # Парсим таблицу с информацией о фильме
+        for row in response.xpath("//table[contains(@class, 'infobox')]//tr"):
             attribute = row.xpath("th//text()").get()
             if attribute:
                 attribute = attribute.strip()
@@ -36,39 +36,24 @@ class MoviesInfoParser(scrapy.Spider):
 
             values = [line.strip().replace(',', '') for line in row.xpath("td//text()").getall() if line.strip()]
             filtered_values = [value for value in values if not value.startswith('[') and value != '']
-            value = ",".join(filtered_values)
+            value = ", ".join(filtered_values)
 
             if 'Жанр' in attribute or 'Жанры' in attribute:
-                movie_info['genres'] = [genre.strip() for genre in value.split(",") 
-                                    if len(genre.strip()) > 2 and genre not in ['1', ']', 'и']]
-
-            elif attribute == 'Год':
-                year = value.split(",")[0]  # берем только первую дату
-                if not year.isdigit():  # если год не числовой, заменяем на "Неизвестно"
-                    year = "Неизвестно"
-                movie_info['year'] = year
-
+                movie_info['genres'] = [genre.strip() for genre in value.split(",") if len(genre.strip()) > 2]
             elif attribute in ['Режиссёр', 'Режиссёры']:
-                cleaned_value = re.sub(r'<[^>]+>', '', value)  # удаляем HTML-теги
-                cleaned_value = re.sub(r'\.mw[\w-]*', '', cleaned_value)  # удаляем CSS-классы
-                movie_info['director'] = [director.strip() for director in cleaned_value.split(",") 
-                                        if len(director.strip()) > 2 and not director.strip().isdigit()]
-
+                cleaned_value = re.sub(r'<[^>]+>', '', value)
+                cleaned_value = re.sub(r'[{}#]', '', cleaned_value)
+                movie_info['director'] = [director.strip() for director in cleaned_value.split(",") if len(director.strip()) > 2]
             elif attribute in ['Страна', 'Страны']:
-                movie_info['country'] = [country.strip() for country in value.split(",") 
-                                        if len(country.strip()) > 2 and not country.strip().isdigit()]
+                movie_info['country'] = [country.strip() for country in value.split(",") if len(country.strip()) > 2]
+            elif attribute == 'Год':
+                movie_info['year'] = value if value else "Неизвестно"
 
-        # Если поля пустые, заменяем их на "Неизвестно"
-        if not movie_info['genres']:
-            movie_info['genres'] = ["Неизвестно"]
-        if not movie_info['year']:
-            movie_info['year'] = "Неизвестно"
-        if not movie_info['director']:
-            movie_info['director'] = ["Неизвестно"]
-        if not movie_info['country']:
-            movie_info['country'] = ["Неизвестно"]
+        # Если поля пустые, заменяем их значением "Неизвестно"
+        for key in ['genres', 'director', 'country']:
+            if not movie_info[key]:
+                movie_info[key] = ["Неизвестно"]
 
-        # выводим информациюю
         yield {
             'title': movie_info['title'],
             'genres': ", ".join(movie_info['genres']),
